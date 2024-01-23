@@ -1,0 +1,1 @@
+terraform import sendgrid_subuser.example "username" # Replace 1234567890 with your subuser ID

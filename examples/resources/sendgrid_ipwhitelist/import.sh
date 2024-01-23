@@ -1,0 +1,1 @@
+terraform import sendgrid_ipwhitelist.example "xxx.xx.xxx.xx/32" # Replace xxx.xx.xxx.xx/32 with your IP address

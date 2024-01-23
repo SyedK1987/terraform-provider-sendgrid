@@ -1,0 +1,1 @@
+terraform import sendgrid_single_sender.example  12345678 # Replace 12345678 with your single sender ID

@@ -1,0 +1,1 @@
+terraform import sendgrid_linkbrand.example "1234567890" # Replace 1234567890 with your domain ID

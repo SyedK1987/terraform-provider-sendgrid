@@ -1,0 +1,211 @@
+package sar
+
+import (
+	"context"
+	"fmt"
+	sar "terraform-provider-sar/client"
+
+	"github.com/hashicorp/terraform-plugin-framework/resource"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/hashicorp/terraform-plugin-log/tflog"
+)
+
+func NewResendTmateResource() resource.Resource {
+	return &resendtmateResource{}
+}
+
+type resendtmateResource struct {
+	client *sar.Client
+}
+
+type ResendTmateModel struct {
+	Username       types.String `tfsdk:"username"`
+	Email          types.String `tfsdk:"email"`
+	FirstName      types.String `tfsdk:"first_name"`
+	LastName       types.String `tfsdk:"last_name"`
+	IsAdmin        types.Bool   `tfsdk:"is_admin"`
+	IsReadOnly     types.Bool   `tfsdk:"is_read_only"`
+	ExpirationDate types.Int64  `tfsdk:"expiration_date"`
+	UserType       types.String `tfsdk:"user_type"`
+	Scopes         types.List   `tfsdk:"scopes"`
+	Token          types.String `tfsdk:"token"`
+}
+
+func (r *resendtmateResource) Metadata(_ context.Context, req resource.MetadataRequest, resp *resource.MetadataResponse) {
+	resp.TypeName = req.ProviderTypeName + "_resend_teammate"
+}
+
+func (r *resendtmateResource) Schema(_ context.Context, req resource.SchemaRequest, resp *resource.SchemaResponse) {
+
+	resp.Schema = schema.Schema{
+		Attributes: map[string]schema.Attribute{
+			"email": schema.StringAttribute{
+				Description: "Email address of the teammate",
+				Required:    true,
+			},
+			"username": schema.StringAttribute{
+				Description: "Username of the teammate",
+				Computed:    true,
+			},
+			"first_name": schema.StringAttribute{
+				Description: "First name of the teammate",
+				Computed:    true,
+			},
+			"last_name": schema.StringAttribute{
+				Description: "Last name of the teammate",
+				Computed:    true,
+			},
+			"is_read_only": schema.BoolAttribute{
+				Description: "Is read only of the teammate",
+				Computed:    true,
+			},
+			"expiration_date": schema.Int64Attribute{
+				Description: "Expiration date of the teammate invite",
+				Computed:    true,
+			},
+			"is_admin": schema.BoolAttribute{
+				Description: "Is admin of the teammate",
+				Computed:    true,
+			},
+			"user_type": schema.StringAttribute{
+				Description: "User type of the teammate",
+				Computed:    true,
+			},
+			"scopes": schema.ListAttribute{
+				Description: "Scopes of the teammate",
+				Computed:    true,
+				ElementType: types.StringType,
+			},
+			"token": schema.StringAttribute{
+				Description: "Token of the Pending teammate",
+				Computed:    true,
+			},
+		},
+	}
+}
+
+func (r *resendtmateResource) Configure(_ context.Context, req resource.ConfigureRequest, resp *resource.ConfigureResponse) {
+	if req.ProviderData == nil {
+		return
+	}
+
+	client, ok := req.ProviderData.(*sar.Client)
+
+	if !ok {
+		resp.Diagnostics.AddError(
+			"Unexpected Resource Configure Type",
+			fmt.Sprintf("Expected *sar.Client, got: %T. Please report this issue to the provider developers.", req.ProviderData),
+		)
+
+		return
+	}
+
+	r.client = client
+}
+
+func (r *resendtmateResource) Create(ctx context.Context, req resource.CreateRequest, resp *resource.CreateResponse) {
+
+	var resendstate ResendTmateModel
+	diags := req.Plan.Get(ctx, &resendstate)
+	resp.Diagnostics.Append(diags...)
+	if diags.HasError() {
+		resp.Diagnostics = diags
+		return
+	}
+
+	tflog.Debug(ctx, "ResendTmateModel:", map[string]any{"item": resendstate.Token.ValueString()})
+
+	if resendstate.Email.ValueString() == "" {
+		resp.Diagnostics.AddError(
+			"Config file missing required parameter.",
+			"Email is required.",
+		)
+		return
+	}
+
+	if resendstate.ExpirationDate.String() == "" {
+		resp.Diagnostics.AddError(
+			"Unexpected error.",
+			"Teammate does not have existing invite to resend.",
+		)
+		return
+	}
+
+	resendtmaterespBody, err := r.client.ResendTmate(ctx, resendstate.Token.ValueString())
+	if err != nil {
+		resp.Diagnostics.AddError(
+			"Failed to resend teammate",
+			fmt.Sprintf("Failed to resend teammate: %s", err),
+		)
+		return
+	}
+
+	resendtmatescopelist, _ := types.ListValueFrom(ctx, types.StringType, resendtmaterespBody.Scopes)
+	resendstate = ResendTmateModel{
+		Username:       types.StringValue(resendtmaterespBody.Username),
+		Email:          types.StringValue(resendtmaterespBody.Email),
+		FirstName:      types.StringValue(resendtmaterespBody.FirstName),
+		LastName:       types.StringValue(resendtmaterespBody.LastName),
+		IsAdmin:        types.BoolValue(resendtmaterespBody.IsAdmin),
+		UserType:       types.StringValue(resendtmaterespBody.UserType),
+		Scopes:         resendtmatescopelist,
+		IsReadOnly:     types.BoolValue(resendtmaterespBody.IsReadOnly),
+		ExpirationDate: types.Int64Value(resendtmaterespBody.ExpirationDate),
+	}
+
+	diags = resp.State.Set(ctx, &resendstate)
+	resp.Diagnostics.Append(diags...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+}
+
+func (r *resendtmateResource) Read(ctx context.Context, req resource.ReadRequest, resp *resource.ReadResponse) {
+
+	var readresendstate ResendTmateModel
+	var err error
+
+	diags := req.State.Get(ctx, &readresendstate)
+	resp.Diagnostics.Append(diags...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	teammaterespBody, err := r.client.RefreshTeammate(ctx, readresendstate.Email.ValueString())
+	if err != nil {
+		resp.Diagnostics.AddError(
+			"Unexpected error",
+			fmt.Sprintf("Unable to refresh teammate: %s", err),
+		)
+		return
+	}
+
+	refreshtmatescopelist, _ := types.ListValueFrom(ctx, types.StringType, teammaterespBody.Scopes)
+	readresendstate = ResendTmateModel{
+		Username:       types.StringValue(teammaterespBody.Username),
+		FirstName:      types.StringValue(teammaterespBody.FirstName),
+		LastName:       types.StringValue(teammaterespBody.LastName),
+		Email:          types.StringValue(teammaterespBody.Email),
+		IsAdmin:        types.BoolValue(teammaterespBody.IsAdmin),
+		UserType:       types.StringValue(teammaterespBody.UserType),
+		Scopes:         refreshtmatescopelist,
+		IsReadOnly:     types.BoolValue(teammaterespBody.IsReadOnly),
+		ExpirationDate: types.Int64Value(teammaterespBody.ExpirationDate),
+		Token:          types.StringValue(teammaterespBody.Token),
+	}
+
+	diags = resp.State.Set(ctx, &readresendstate)
+	resp.Diagnostics.Append(diags...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+}
+
+func (r *resendtmateResource) Update(ctx context.Context, req resource.UpdateRequest, resp *resource.UpdateResponse) {
+	return // nothing to do
+}
+
+func (r *resendtmateResource) Delete(ctx context.Context, req resource.DeleteRequest, resp *resource.DeleteResponse) {
+	return // nothing to do
+}
