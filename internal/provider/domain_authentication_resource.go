@@ -8,6 +8,7 @@ import (
 
 	sendgrid "terraform-provider-sendgrid/client"
 
+	backoff "github.com/cenkalti/backoff"
 	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
 	"github.com/hashicorp/terraform-plugin-framework/attr"
 	"github.com/hashicorp/terraform-plugin-framework/path"
@@ -90,7 +91,7 @@ func (r *domainauthResource) Configure(_ context.Context, req resource.Configure
 	r.client = client
 }
 
-func (r *domainauthResource) Schema(_ context.Context, req resource.SchemaRequest, resp *resource.SchemaResponse) {
+func (r *domainauthResource) Schema(ctx context.Context, req resource.SchemaRequest, resp *resource.SchemaResponse) {
 
 	resp.Schema = schema.Schema{
 		Description: "Resource to manage domain authentication",
@@ -132,6 +133,9 @@ func (r *domainauthResource) Schema(_ context.Context, req resource.SchemaReques
 			"custom_dkim_selector": schema.StringAttribute{
 				Description: "The custom DKIM",
 				Computed:    true,
+				PlanModifiers: []planmodifier.String{
+					stringplanmodifier.UseStateForUnknown(),
+				},
 				//	Required:    true,
 				// Validators: []validator.String{
 				// 	stringvalidator.LengthBetween(3, 3),
@@ -361,7 +365,20 @@ func (r *domainauthResource) Create(ctx context.Context, req resource.CreateRequ
 		return
 	}
 
-	newItem, err := r.client.CreateDomainAuth(ctx, itemState)
+	//newItem, err := r.client.CreateDomainAuth(ctx, itemState)
+
+	// create retrycontext with backoff
+	retryctx := backoff.WithContext(backoff.NewExponentialBackOff(), ctx)
+
+	var newItem *sendgrid.DomainAuth
+	var err error
+	err = backoff.Retry(func() error {
+		newItem, err = r.client.CreateDomainAuth(ctx, itemState)
+		return err
+	}, retryctx)
+
+	//newItem, err := newstate.Timeout.Create(ctx, func(ctx context.Context) (interface{}, error) {
+
 	if err != nil {
 		resp.Diagnostics.AddError(
 			"Error creating domain authentication",
@@ -447,12 +464,14 @@ func (r *domainauthResource) Create(ctx context.Context, req resource.CreateRequ
 		return
 	}
 
-	var receiveIps []string
-	if len(newItem.Ips) > 0 {
-		receiveIps = append(receiveIps, newItem.Ips...)
-	} else {
-		receiveIps = append(receiveIps, "")
-	}
+	// var receiveIps []string
+	// if len(newItem.Ips) > 0 {
+	// 	receiveIps = append(receiveIps, newItem.Ips...)
+
+	// } else {
+	// 	receiveIps = append(receiveIps, "")
+
+	// }
 
 	newstate = DomainauthResourceModel{
 		ID:            types.Int64Value(newItem.ID),
@@ -462,8 +481,8 @@ func (r *domainauthResource) Create(ctx context.Context, req resource.CreateRequ
 		Environment:   newstate.Environment,
 		CustomDKIM:    types.StringValue(autodecidedDKIM),
 		Username:      types.StringValue(newItem.Username),
-		Ips:           receiveIps,
-		CusomSPF:      types.BoolValue(newItem.CustomSPF),
+		Ips:           newItem.Ips,
+		CusomSPF:      newstate.CusomSPF,
 		Defaultdomain: types.BoolValue(newItem.Defaultdomain),
 		Legacy:        types.BoolValue(newItem.Legacy),
 		//	AutoSecurity:  newstate.AutoSecurity,
@@ -473,7 +492,50 @@ func (r *domainauthResource) Create(ctx context.Context, req resource.CreateRequ
 		MCNAME: mcnameMapVlaue,
 	}
 
-	//getelemements := make(map[string]DomainAuthRecord)
+	if len(newItem.Subusers) > 0 {
+		elements := []attr.Value{}
+		for _, subuser := range newItem.Subusers {
+			elements = append(elements, types.ObjectValueMust(
+				map[string]attr.Type{
+					"username": types.StringType,
+					"user_id":  types.Int64Type,
+				},
+				map[string]attr.Value{
+					"username": types.StringValue(subuser.Username),
+					"user_id":  types.Int64Value(subuser.UserID),
+				},
+			))
+		}
+
+		newstate.Subusers = types.ListValueMust(
+			types.ObjectType{
+				AttrTypes: map[string]attr.Type{
+					"username": types.StringType,
+					"user_id":  types.Int64Type,
+				},
+			}, elements,
+		)
+	} else {
+		newstate.Subusers = types.ListValueMust(
+			types.ObjectType{
+				AttrTypes: map[string]attr.Type{
+					"username": types.StringType,
+					"user_id":  types.Int64Type,
+				},
+			}, []attr.Value{
+				types.ObjectValueMust(
+					map[string]attr.Type{
+						"username": types.StringType,
+						"user_id":  types.Int64Type,
+					},
+					map[string]attr.Value{
+						"username": types.StringValue(""),
+						"user_id":  types.Int64Value(0),
+					},
+				),
+			},
+		)
+	}
 
 	diags = resp.State.Set(ctx, newstate)
 	resp.Diagnostics.Append(diags...)
@@ -580,11 +642,15 @@ func (r *domainauthResource) Read(ctx context.Context, req resource.ReadRequest,
 
 	getcdkim := strings.Split(readitem.DNSDetails.DKIM1.Host, ".")[0]
 
-	var receiveIps []string
-	if len(readitem.Ips) > 0 {
-		receiveIps = append(receiveIps, readitem.Ips...)
-	} else {
-		receiveIps = append(receiveIps, "")
+	// var receiveIps []string
+	// if len(readitem.Ips) > 0 {
+	// 	receiveIps = append(receiveIps, readitem.Ips...)
+	// } else {
+	// 	receiveIps = append(receiveIps, "")
+	// }
+
+	if (readitem.Ips == nil) || (len(readitem.Ips) == 0) {
+		readitem.Ips = []string{}
 	}
 
 	readstate = DomainauthResourceModel{
@@ -595,7 +661,7 @@ func (r *domainauthResource) Read(ctx context.Context, req resource.ReadRequest,
 		Environment:   readstate.Environment,
 		CustomDKIM:    types.StringValue(getcdkim),
 		Username:      types.StringValue(readitem.Username),
-		Ips:           receiveIps,
+		Ips:           readitem.Ips,
 		CusomSPF:      types.BoolValue(readitem.CustomSPF),
 		Defaultdomain: types.BoolValue(readitem.Defaultdomain),
 		Legacy:        types.BoolValue(readitem.Legacy),
