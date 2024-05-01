@@ -70,7 +70,6 @@ func (r *apikeyResource) Schema(_ context.Context, _ resource.SchemaRequest, res
 			"scopes": schema.ListAttribute{
 				Description: "List of scopes for the API key",
 				Required:    true,
-				Computed:    true,
 				ElementType: types.StringType,
 				PlanModifiers: []planmodifier.List{
 					listplanmodifier.UseStateForUnknown(),
